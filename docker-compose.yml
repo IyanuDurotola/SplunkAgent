@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${MEMORY_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${MEMORY_DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${MEMORY_DB_NAME:-splunkprocessor}
+    ports:
+      - "${MEMORY_DB_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./memory/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MEMORY_DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  gateway:
+    build: .
+    ports:
+      - "8082:8082"
+    environment:
+      - SPLUNK_HOST=${SPLUNK_HOST}
+      - SPLUNK_USERNAME=${SPLUNK_USERNAME}
+      - SPLUNK_PASSWORD=${SPLUNK_PASSWORD}
+      - SPLUNK_PORT=${SPLUNK_PORT:-8089}
+      - MEMORY_DB_HOST=postgres
+      - MEMORY_DB_PORT=5432
+      - MEMORY_DB_NAME=${MEMORY_DB_NAME:-splunkprocessor}
+      - MEMORY_DB_USER=${MEMORY_DB_USER:-postgres}
+      - MEMORY_DB_PASSWORD=${MEMORY_DB_PASSWORD:-postgres}
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "python -m memory.db_init && 
+             uvicorn gateway.main:app --host 0.0.0.0 --port 8082"
+    restart: unless-stopped
+
+# volumes:
+#   postgres-data:
+
+  # Optional: Local Splunk instance for testing
+  # Uncomment and configure if you want to run Splunk locally
+  splunk:
+    image: splunk/splunk:latest
+    platform: linux/amd64
+    environment:
+      - SPLUNK_START_ARGS=--accept-license
+      - SPLUNK_PASSWORD=${SPLUNK_PASSWORD}
+      - SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com
+    ports:
+      - "8000:8000"
+      - "8088:8088"
+      - "8089:8089"
+    volumes:
+      - splunk-data:/opt/splunk/var
+
+volumes:
+  splunk-data:
+  postgres-data:
+

@@ -1,0 +1,2 @@
+"""AI Query Gateway service."""
+
