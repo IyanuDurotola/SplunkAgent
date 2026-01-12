@@ -10,8 +10,6 @@ class SplunkConfig(BaseSettings):
     password: Optional[str] = None
     scheme: str = "https"
     verify: bool = False
-    hec_token: Optional[str] = None
-    hec_port: int = 8088
     
     class Config:
         env_file = ".env"
