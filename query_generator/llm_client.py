@@ -41,7 +41,8 @@ Guidelines:
 - Use appropriate SPL commands and syntax
 - Include time constraints when relevant
 - Focus on the specific hypothesis provided
-- Use the extracted entities and keywords to make queries more precise"""
+- Use the extracted entities and keywords to make queries more precise
+- If the user asks for "origin" or "first occurrence", use '| sort _time' followed by '| head 1' to get the earliest result"""
 
         # Build historical context section
         historical_section = ""
@@ -54,12 +55,16 @@ Guidelines:
         if intent:
             entities = intent.get("entities", [])
             symptom_keywords = intent.get("symptom_keywords", [])
-            if entities or symptom_keywords:
+            query_patterns = intent.get("query_patterns", [])
+            if entities or symptom_keywords or query_patterns:
                 intent_section = "\nExtracted Information:\n"
                 if entities:
                     intent_section += f"Key Entities to search for: {', '.join(entities)}\n"
                 if symptom_keywords:
                     intent_section += f"Keywords/Patterns to match: {', '.join(symptom_keywords)}\n"
+                if query_patterns:
+                    if "origin" in query_patterns or "first_occurrence" in query_patterns:
+                        intent_section += "IMPORTANT: User wants to find the FIRST/EARLIEST occurrence. Use '| sort _time' followed by '| head 1' to get the earliest result.\n"
                 intent_section += "Use these entities and keywords in your SPL query to make it more targeted.\n"
                 
                 # Get Splunk indexes for matched services
@@ -95,9 +100,15 @@ Use the correct Splunk indexes from the service catalog information provided abo
             
             # Clean up the response - remove markdown code blocks if present
             query = response.strip()
+            # Remove markdown code blocks
             query = query.replace("```spl", "").replace("```", "").strip()
+            # Remove any backticks that might wrap the entire query (common LLM mistake)
+            if query.startswith("`") and query.endswith("`"):
+                query = query[1:-1].strip()
             # Remove any leading/trailing quotes
             query = query.strip('"').strip("'")
+            # Remove any remaining backticks (they shouldn't be in SPL queries)
+            query = query.replace("`", "")
             
             logger.info("Generated SPL query using Bedrock", query=query[:100])
             return query

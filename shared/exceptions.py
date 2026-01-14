@@ -24,3 +24,6 @@ class ValidationError(SplunkProcessorException):
     """Validation failed."""
     pass
 
+class ServiceNotFoundError(SplunkProcessorException):
+    """No matching service found in service catalog."""
+    pass

@@ -32,8 +32,13 @@ class QueryGuardrails:
         
         return True
     
-    def constrain_query(self, query: str, time_window: tuple) -> str:
-        """Constrain query with time window and other limits."""
+    def constrain_query(self, query: str, time_window: tuple) -> tuple:
+        """Constrain query with time window and other limits.
+        
+        Returns:
+            tuple: (cleaned_query, time_params_dict) where time_params_dict contains
+                   'earliest' and 'latest' as Unix epoch timestamps for Splunk API kwargs
+        """
         # Ensure time window is within limits
         from datetime import datetime, timedelta
         start, end = time_window
@@ -43,13 +48,22 @@ class QueryGuardrails:
             logger.warning("Time window exceeds max, constraining", days=days_diff)
             end = start + timedelta(days=self.MAX_TIME_RANGE_DAYS)
         
-        # Add time constraints if not present
-        if 'earliest=' not in query.lower() and 'latest=' not in query.lower():
-            time_constraint = f'earliest="{start.strftime("%Y-%m-%dT%H:%M:%S")}" latest="{end.strftime("%Y-%m-%dT%H:%M:%S")}"'
-            if 'index=' in query:
-                query = query.replace('index=', f'{time_constraint} index=', 1)
-            else:
-                query = f'{time_constraint} {query}'
+        # Convert datetime to Unix epoch timestamp (seconds) for Splunk API
+        earliest_timestamp = int(start.timestamp())
+        latest_timestamp = int(end.timestamp())
         
-        return query
+        # Remove any existing earliest/latest from query string (they'll be passed as kwargs)
+        # Clean the query to remove time constraints that might have been added
+        # query_cleaned = query
+        # # Remove earliest= and latest= patterns from query
+        # query_cleaned = re.sub(r'earliest\s*=\s*[^\s"]+\s*', '', query_cleaned, flags=re.IGNORECASE)
+        # query_cleaned = re.sub(r'latest\s*=\s*[^\s"]+\s*', '', query_cleaned, flags=re.IGNORECASE)
+        # query_cleaned = re.sub(r'\s+', ' ', query_cleaned).strip()  # Clean up extra spaces
+        
+        time_params = {
+            'earliest_time': earliest_timestamp,
+            'latest_time': latest_timestamp
+        }
+        
+        return query, time_params
 

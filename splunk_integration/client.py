@@ -5,6 +5,7 @@ import structlog
 import asyncio
 import os
 import urllib3
+import json
 
 from splunk_integration.config import SplunkConfig
 from splunk_integration.models import SplunkSearchResult
@@ -132,11 +133,36 @@ class SplunkClient:
                 job = self.service.jobs.oneshot(query, output_mode=output_mode, count=count, **kwargs)
                 results = []
                 for result in job:
-                    results.append(result)
+                    # Handle both dict and bytes responses
+                    if isinstance(result, bytes):
+                        # If result is bytes, try to parse as JSON
+                        try:
+                            result = json.loads(result.decode('utf-8'))
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            # If not JSON, treat as raw string
+                            result = {"_raw": result.decode('utf-8', errors='ignore')}
+                    elif isinstance(result, str):
+                        # If result is string, try to parse as JSON
+                        try:
+                            result = json.loads(result)
+                        except json.JSONDecodeError:
+                            result = {"_raw": result}
+                    # result should now be a dict
+                    if isinstance(result, dict):
+                        results.append(result)
+                    else:
+                        # Fallback: wrap in dict
+                        results.append({"_raw": str(result)})
+                
+                # Extract fields from first result if available
+                fields = []
+                if results and isinstance(results[0], dict):
+                    fields = list(results[0].keys())
+                
                 return {
                     "results": results,
                     "total_count": len(results),
-                    "fields": list(results[0].keys()) if results else []
+                    "fields": fields
                 }
             except Exception as e:
                 # Reset connection on error

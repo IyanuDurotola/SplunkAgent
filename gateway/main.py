@@ -6,7 +6,7 @@ import time
 import structlog
 
 from gateway.config import GatewayConfig
-from gateway.models import QueryRequest, QueryResponse, EvidenceItem
+from gateway.models import QueryRequest, QueryResponse
 from orchestrator.orchestrator import InvestigationOrchestrator
 from shared.logger import setup_logging
 
@@ -70,27 +70,29 @@ async def query(request: QueryRequest):
         
         processing_time = (time.time() - start_time) * 1000
         
-        # Convert result to response model
-        evidence = [
-            EvidenceItem(
-                source=e["source"],
-                content=e["content"],
-                relevance_score=e["relevance_score"],
-                timestamp=e.get("timestamp")
-            )
-            for e in result["evidence"]
-        ]
-        
+        # Build response with enhanced confidence details
         response = QueryResponse(
             answer=result["answer"],
             confidence_score=result["confidence_score"],
-            evidence=evidence,
+            confidence_level=result.get("confidence_level", "unknown"),
+            confidence_details=result.get("confidence_details"),
+            supporting_evidence=result.get("supporting_evidence", []),
+            evidence=result["evidence"],
             investigation_steps=result["investigation_steps"],
+            root_causes=result.get("root_causes", []),
+            correlations=result.get("correlations"),
             processing_time_ms=processing_time,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
+            requires_user_input=result.get("requires_user_input", False),
+            available_services=result.get("available_services")
         )
         
-        logger.info("Query processed successfully", processing_time_ms=processing_time)
+        logger.info(
+            "Query processed successfully", 
+            processing_time_ms=processing_time,
+            confidence_level=result.get("confidence_level"),
+            evidence_count=len(result.get("evidence", []))
+        )
         return response
         
     except Exception as e:

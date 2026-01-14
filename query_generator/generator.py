@@ -44,16 +44,24 @@ class SplunkQueryGenerator:
         )
         
         # Validate query
+        time_params = {}
         if self.config.enable_guardrails:
             self.guardrails.validate_query(query)
-            query = self.guardrails.constrain_query(query, time_window)
+            query, time_params = self.guardrails.constrain_query(query, time_window)
         
         logger.info("Generated validated SPL query", query=query[:100])
-        return query
+        return query, time_params
     
-    async def execute_query(self, query: str) -> Dict[str, Any]:
-        """Execute SPL query through Splunk API."""
-        results = await self.splunk_client.search(query)
+    async def execute_query(self, query: str, time_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Execute SPL query through Splunk API.
+        
+        Args:
+            query: SPL query string (without earliest/latest - those are passed as kwargs)
+            time_params: Optional dict with 'earliest_time' and 'latest_time' for Splunk API
+        """
+        # Pass time parameters as kwargs to Splunk API
+        kwargs = time_params or {}
+        results = await self.splunk_client.search(f"search {query}", **kwargs)
         logger.info("Executed SPL query", results_count=len(results.get("results", [])))
         return results
 

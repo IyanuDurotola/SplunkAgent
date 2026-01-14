@@ -43,11 +43,6 @@ services:
              uvicorn gateway.main:app --host 0.0.0.0 --port 8082"
     restart: unless-stopped
 
-# volumes:
-#   postgres-data:
-
-  # Optional: Local Splunk instance for testing
-  # Uncomment and configure if you want to run Splunk locally
   splunk:
     image: splunk/splunk:latest
     platform: linux/amd64
