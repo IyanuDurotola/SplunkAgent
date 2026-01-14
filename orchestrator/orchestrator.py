@@ -47,9 +47,20 @@ class InvestigationOrchestrator:
         # hard code changing the only date to 09-01-2026 while maintaining the time window
         start_time = start_time.replace(year=2026, month=1, day=9)
         end_time = end_time.replace(year=2026, month=1, day=9)
+
+
+        # Check if we can match any services from the service catalog
+        entities = intent.get("entities", [])
+        matched_services = self.service_catalog.find_services_by_entities(entities)
         
         if not matched_services:
-            error_message = (
+            # No matching services found - either no entities extracted or entities don't match catalog
+            available_services = list(self.service_catalog.services.keys())
+            service_list = ", ".join(available_services)
+            
+            if entities:
+                # Entities were extracted but don't match any service
+                error_message = (
                     f"I couldn't identify which service is failing from your question. "
                     f"I found these entities: {', '.join(entities)}, but they don't match any services in the catalog.\n\n"
                     f"Available services: {service_list}\n\n"
