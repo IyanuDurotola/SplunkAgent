@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "services": {
+    "client": {
+      "service_id": "client",
+      "domain": "frontend",
+      "tier": "frontend",
+      "observability": {
+        "splunk": {
+          "primary_indexes": ["client"]
+        }
+      },
+      "dependencies": {
+        "upstream": [
+          { "service": "thingspace-core" }
+        ]
+      }
+    },
+    "thingspace-core": {
+      "service_id": "thingspace-core",
+      "domain": "thingspace",
+      "tier": "backend",
+      "criticality": "high",
+      "observability": {
+        "splunk": {
+          "primary_indexes": ["ts"]
+        }
+      },
+      "dependencies": {
+        "upstream": [
+          {
+            "service": "provider",
+            "failure_modes": ["timeout", "5xx"]
+          }
+        ]
+      }
+    },
+    "provider": {
+      "service_id": "provider",
+      "domain": "provider",
+      "tier": "backend",
+      "observability": {
+        "splunk": {
+          "primary_indexes": ["at"]
+        }
+      },
+      "dependencies": {
+        "upstream": [
+          {
+            "service": "database",
+            "failure_modes": ["timeout", "connection error","device not found"]
+          },
+          {
+            "service": "cache",
+            "failure_modes": ["timeout", "connection error"]
+          },
+          {
+            "service": "queue",
+            "failure_modes": ["timeout", "connection error"]
+          }
+        ]
+      }
+    }
+  }
+}
+  
