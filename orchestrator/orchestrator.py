@@ -44,25 +44,43 @@ class InvestigationOrchestrator:
         # Extract intent and time window
         intent = await self.planning_engine.extract_intent(question)
         start_time, end_time = parse_time_window(time_window)
-        # hard code changing the only date to 09-01-2026 while maintaining the time window
+        # Hard-code the date to 2026-01-09 for seeded data, while preserving the original window duration.
+        # (The previous implementation pinned BOTH start and end to the same day, collapsing the window to ~0s.)
+        if start_time > end_time:
+            start_time, end_time = end_time, start_time
+            logger.warning("Start time is greater than end time, swapping them", start_time=start_time, end_time=end_time)
+
+        window_delta = end_time - start_time
         start_time = start_time.replace(year=2026, month=1, day=9)
-        end_time = end_time.replace(year=2026, month=1, day=9)
+        end_time = start_time + window_delta
 
 
         # Check if we can match any services from the service catalog
-        entities = intent.get("entities", [])
-        matched_services = self.service_catalog.find_services_by_entities(entities)
+        services = intent.get("services", []) or []
+        indexes = intent.get("indexes", []) or []
+        entities = intent.get("entities", []) or []
+
+        # If indexes were provided but services were not, infer owning services from catalog
+        if indexes and not services:
+            for idx in indexes:
+                owner = self.service_catalog.find_service_by_index(idx)
+                if owner and owner not in services:
+                    services.append(owner)
+            intent["services"] = services
+
+        matched_services = self.service_catalog.find_services_by_entities(services)
         
-        if not matched_services:
+        # If we don't have a scoped service, only ask the user when we also have no usable identifiers/index hints.
+        if not matched_services and not indexes and not entities:
             # No matching services found - either no entities extracted or entities don't match catalog
             available_services = list(self.service_catalog.services.keys())
             service_list = ", ".join(available_services)
             
-            if entities:
-                # Entities were extracted but don't match any service
+            if services:
+                # Services were extracted but don't match any service
                 error_message = (
                     f"I couldn't identify which service is failing from your question. "
-                    f"I found these entities: {', '.join(entities)}, but they don't match any services in the catalog.\n\n"
+                    f"I found these services: {', '.join(services)}, but they don't match any services in the catalog.\n\n"
                     f"Available services: {service_list}\n\n"
                     f"Please specify which service is experiencing the issue, for example: "
                     f"'Why is [service_name] failing?' or 'What's wrong with [service_name]?'"
@@ -78,6 +96,8 @@ class InvestigationOrchestrator:
             
             logger.warning(
                 "No matching service found in catalog",
+                extracted_services=services,
+                extracted_indexes=indexes,
                 extracted_entities=entities,
                 available_services=available_services
             )
@@ -125,6 +145,7 @@ class InvestigationOrchestrator:
             # Execute query through Splunk API
             try:
                 query_results = await self.query_generator.execute_query(spl_query, time_params)
+                logger.info(f"\n{idx} - Query results: \n{query_results} \n\n")
             except Exception as e:
                 logger.warning("Failed to execute Splunk query", error=str(e), query=spl_query[:100])
                 # Continue with empty results if Splunk is unavailable
@@ -307,6 +328,7 @@ class InvestigationOrchestrator:
                     historical_context=None,
                     intent={
                         **intent,
+                        "services": [upstream_service],
                         "entities": [upstream_service],
                         "is_upstream_check": True
                     }

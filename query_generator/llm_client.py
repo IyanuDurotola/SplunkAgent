@@ -6,6 +6,7 @@ import os
 from query_generator.config import QueryGeneratorConfig
 from shared.bedrock_client import BedrockClient
 from shared.service_catalog import ServiceCatalog
+from shared.logfields_catalog import LogFieldsCatalog
 
 logger = structlog.get_logger()
 
@@ -23,6 +24,8 @@ class LLMClient:
         )
         # Initialize service catalog for index-aware query generation
         self.service_catalog = ServiceCatalog()
+        # Initialize logfields catalog to ground SPL field names
+        self.logfields_catalog = LogFieldsCatalog()
         logger.info("Initialized Bedrock LLM client", provider=config.llm_provider, model=config.llm_model)
     
     async def generate_spl_query(
@@ -42,7 +45,11 @@ Guidelines:
 - Include time constraints when relevant
 - Focus on the specific hypothesis provided
 - Use the extracted entities and keywords to make queries more precise
-- If the user asks for "origin" or "first occurrence", use '| sort _time' followed by '| head 1' to get the earliest result"""
+- Do NOT invent `source=` or `sourcetype=` filters (only include them if the user explicitly mentioned them)
+- Only use field names that exist in the provided logfields catalog (plus Splunk metadata like index/source/sourcetype/host).
+- If the user asks for "origin" or "first occurrence", return the earliest matching event:
+  Prefer sorting by the log field `time`:
+  `| sort 0 time | head 1`."""
 
         # Build historical context section
         historical_section = ""
@@ -53,42 +60,54 @@ Guidelines:
         intent_section = ""
         index_context = ""
         if intent:
-            entities = intent.get("entities", [])
+            services = intent.get("services", []) or []
+            indexes = intent.get("indexes", []) or []
+            apps = intent.get("apps", []) or []
+            entities = intent.get("entities", []) or []
             symptom_keywords = intent.get("symptom_keywords", [])
             query_patterns = intent.get("query_patterns", [])
-            if entities or symptom_keywords or query_patterns:
+            if services or indexes or apps or entities or symptom_keywords or query_patterns:
                 intent_section = "\nExtracted Information:\n"
+                if services:
+                    intent_section += f"Services: {', '.join(services)}\n"
+                if apps:
+                    intent_section += f"Apps (use as app=<name> filter): {', '.join(apps)}\n"
                 if entities:
                     intent_section += f"Key Entities to search for: {', '.join(entities)}\n"
                 if symptom_keywords:
                     intent_section += f"Keywords/Patterns to match: {', '.join(symptom_keywords)}\n"
                 if query_patterns:
                     if "origin" in query_patterns or "first_occurrence" in query_patterns:
-                        intent_section += "IMPORTANT: User wants to find the FIRST/EARLIEST occurrence. Use '| sort _time' followed by '| head 1' to get the earliest result.\n"
+                        intent_section += "IMPORTANT: User wants the FIRST/EARLIEST occurrence. Use '| sort 0 time | head 1'.\n"
                 intent_section += "Use these entities and keywords in your SPL query to make it more targeted.\n"
                 
-                # Get Splunk indexes for matched services
-                matched_services = self.service_catalog.find_services_by_entities(entities)
-                if matched_services:
-                    index_context = "\nSplunk Index Information:\n"
+                # Build Splunk index scope (prefer explicit validated indexes from intent)
+                index_context = "\nSplunk Index Information:\n"
+                if indexes:
+                    index_context += f"- Use ONLY these indexes (validated): {', '.join(indexes)}\n"
+                    index_context += f"  Use 'index={indexes[0]}' or 'index={' OR index='.join(indexes)}'.\n"
+                else:
+                    matched_services = self.service_catalog.find_services_by_entities(services)
                     for service in matched_services:
                         service_id = service.get("service_id")
-                        indexes = self.service_catalog.get_splunk_indexes(service_id)
-                        if indexes:
-                            index_context += f"- Service '{service_id}' uses indexes: {', '.join(indexes)}\n"
-                            index_context += f"  Use 'index={indexes[0]}' or 'index={' OR index='.join(indexes)}' in your SPL query for this service.\n"
-                    
-                    if not index_context.endswith("\n\n"):
-                        index_context += "\n"
-                    index_context += "IMPORTANT: Use the correct Splunk indexes from the service catalog above. Do not guess or hallucinate index names.\n"
+                        svc_indexes = self.service_catalog.get_splunk_indexes(service_id)
+                        if svc_indexes:
+                            index_context += f"- Service '{service_id}' uses indexes: {', '.join(svc_indexes)}\n"
+                            index_context += f"  Use 'index={svc_indexes[0]}' or 'index={' OR index='.join(svc_indexes)}' in your SPL query for this service.\n"
+
+                if not index_context.endswith("\n\n"):
+                    index_context += "\n"
+                index_context += "IMPORTANT: Use the correct Splunk indexes from the service catalog above. Do not guess or hallucinate index names.\n"
         
+        logfields_context = self.logfields_catalog.as_prompt_block()
+
         user_prompt = f"""Generate a Splunk Query Language (SPL) query to investigate the following hypothesis.
 
 Hypothesis: {hypothesis}
 Original Question: {question}
-{intent_section}{index_context}{historical_section}
+{intent_section}{index_context}{logfields_context}{historical_section}
 Generate only the SPL query without any additional text, explanations, or markdown formatting.
-Use the correct Splunk indexes from the service catalog information provided above."""
+Use the correct Splunk indexes from the service catalog information provided above. If the index is not in the catalog use wildcard 'index=*'."""
 
         try:
             response = await self.bedrock_client.invoke(

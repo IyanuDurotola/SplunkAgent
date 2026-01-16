@@ -74,6 +74,40 @@ class ServiceCatalog:
         observability = service.get("observability", {})
         splunk = observability.get("splunk", {})
         return splunk.get("primary_indexes", [])
+
+    def get_apps(self, service_id: str) -> List[str]:
+        """Get app names configured under a service (from service catalog)."""
+        service = self.find_service(service_id)
+        if not service:
+            return []
+        dependencies = service.get("dependencies", {}) or {}
+        apps = dependencies.get("apps", []) or []
+        app_names: List[str] = []
+        for app in apps:
+            if isinstance(app, dict) and app.get("app"):
+                app_names.append(str(app.get("app")))
+            elif isinstance(app, str):
+                app_names.append(app)
+        return app_names
+
+    def get_all_apps(self) -> List[str]:
+        """Return all unique app names across the catalog."""
+        apps: Set[str] = set()
+        for service_id in self.services.keys():
+            for app in self.get_apps(service_id):
+                if app:
+                    apps.add(app)
+        return sorted(apps)
+
+    def find_service_by_app(self, app_name: str) -> Optional[str]:
+        """Return the owning service_id for an app name, if known."""
+        a = (app_name or "").lower()
+        if not a:
+            return None
+        for service_id in self.services.keys():
+            if any(a == (x or "").lower() for x in self.get_apps(service_id)):
+                return service_id
+        return None
     
     def get_upstream_dependencies(self, service_id: str) -> List[Dict[str, Any]]:
         """Get upstream dependencies for a service."""
@@ -170,3 +204,23 @@ class ServiceCatalog:
             "dependency_chain_upstream": self.get_dependency_chain(service_id, "upstream"),
             "dependency_chain_downstream": self.get_dependency_chain(service_id, "downstream")
         }
+
+    def find_service_by_index(self, index_name: str) -> Optional[str]:
+        """Return the owning service_id for a Splunk index, if known."""
+        idx = (index_name or "").lower()
+        if not idx:
+            return None
+        for service_id in self.services.keys():
+            indexes = self.get_splunk_indexes(service_id)
+            if any(idx == (i or "").lower() for i in indexes):
+                return service_id
+        return None
+
+    def get_all_splunk_indexes(self) -> List[str]:
+        """Return all unique Splunk primary indexes across the catalog."""
+        indexes: Set[str] = set()
+        for service_id in self.services.keys():
+            for idx in self.get_splunk_indexes(service_id):
+                if idx:
+                    indexes.add(idx)
+        return sorted(indexes)

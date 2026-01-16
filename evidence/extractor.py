@@ -148,7 +148,8 @@ class EvidenceExtractor:
             if is_error and message:
                 samples.append({
                     "message": str(message)[:200],
-                    "timestamp": result.get("_time"),
+                    # Prefer `time` if present; fallback to Splunk `_time` / generic `timestamp`.
+                    "timestamp": result.get("time") or result.get("_time") or result.get("timestamp"),
                     "service": result.get("index", result.get("source", "unknown")),
                     "level": result.get("level", "error")
                 })

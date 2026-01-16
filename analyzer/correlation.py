@@ -29,11 +29,11 @@ class PatternCorrelation:
         if len(events) < 2:
             return correlations
         
-        # Sort by timestamp (Splunk format is ISO-like)
-        sorted_events = sorted(events, key=lambda x: x.get("_time", x.get("timestamp", "")))
+        # Sort by timestamp (Splunk commonly uses `_time`, but some environments emit `time`)
+        sorted_events = sorted(events, key=lambda x: self._get_event_time_str(x) or "")
         
         for i, event in enumerate(sorted_events):
-            event_time = self._parse_timestamp(event.get("_time", event.get("timestamp")))
+            event_time = self._parse_timestamp(self._get_event_time_str(event))
             if not event_time:
                 continue
             
@@ -42,7 +42,7 @@ class PatternCorrelation:
                 if i == j:
                     continue
                 
-                other_time = self._parse_timestamp(other_event.get("_time", other_event.get("timestamp")))
+                other_time = self._parse_timestamp(self._get_event_time_str(other_event))
                 if not other_time:
                     continue
                 
@@ -77,7 +77,7 @@ class PatternCorrelation:
                 transactions[correlation_id].append({
                     "event": event,
                     "service": event.get("index", event.get("source", "unknown")),
-                    "timestamp": event.get("_time", event.get("timestamp"))
+                    "timestamp": self._get_event_time_str(event)
                 })
         
         # Sort events within each transaction by timestamp
@@ -126,6 +126,10 @@ class PatternCorrelation:
         return recurring
     
     # Helper methods
+    def _get_event_time_str(self, event: Dict[str, Any]) -> Optional[str]:
+        """Extract a timestamp string from an event across common field names."""
+        return event.get("time") or event.get("_time") or event.get("timestamp")
+
     def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
         """Parse Splunk timestamp (ISO format)."""
         if not timestamp_str:

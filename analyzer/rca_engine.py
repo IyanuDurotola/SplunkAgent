@@ -81,7 +81,7 @@ class RCAEngine:
                             "count": 1,
                             "significance": "high",
                             "service": result.get("index", result.get("source", "")),
-                            "timestamp": result.get("_time"),
+                            "timestamp": self._extract_timestamp(result),
                             "error_category": self._categorize_error(result)
                         })
         
@@ -95,7 +95,7 @@ class RCAEngine:
             results = step.get("results", {})
             if isinstance(results, dict):
                 for result in results.get("results", []):
-                    timestamp = result.get("_time")
+                    timestamp = self._extract_timestamp(result)
                     if timestamp and self._is_error_result(result):
                         events.append({
                             "timestamp": timestamp,
@@ -105,6 +105,10 @@ class RCAEngine:
         # Sort by timestamp
         events.sort(key=lambda x: x.get("timestamp", ""), reverse=False)
         return events
+
+    def _extract_timestamp(self, event: Dict[str, Any]) -> Optional[str]:
+        """Extract timestamp from common Splunk/event field names."""
+        return event.get("time") or event.get("_time") or event.get("timestamp")
     
     def _analyze_cascade_patterns(self, timeline: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Analyze if errors cascaded through service dependencies (simplified)."""

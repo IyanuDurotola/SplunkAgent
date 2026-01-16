@@ -1,0 +1,17 @@
+{
+    "schema_version": "1.0",
+    "logfields": {
+        "transactionId": "this is the transaction id of the log message",
+        "timestamp": "this is the timestamp of the log message",
+        "message": "this is the message of the log",
+        "app": "this is the app name that the log message came from",
+        "dc": "this is the datacenter that the app is running in",
+        "file": "this is the file that the log message was logged from",
+        "group": "this is the group that the app is a part of",
+        "host_ip": "this is the ip address of the host that the app is running on",
+        "level": "this is the level of the log message which can be INFO, WARNING, ERROR, DEBUG, CRITICAL, etc.",
+        "pname": "this is the pname that the app is running on",
+        "time": "this is the time that the log message was logged"
+    }
+}
+

@@ -53,7 +53,9 @@ class ResultAnalyzer:
         field_counts = {}
         for result in results:
             for key, value in result.items():
-                if key not in ['_time', '_raw']:
+                # Avoid high-cardinality timestamp/raw fields skewing pattern detection.
+                # Splunk commonly uses `_time`, but some environments emit/rename to `time`.
+                if key not in ['_time', 'time', 'timestamp', '_raw']:
                     if key not in field_counts:
                         field_counts[key] = {}
                     field_counts[key][str(value)] = field_counts[key].get(str(value), 0) + 1

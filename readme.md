@@ -99,3 +99,24 @@ sequenceDiagram
         "time_window": "24h"
     }'
    ```
+
+
+# Adding data to splunk
+```
+docker cp ~/Downloads/ts-core-Jan-9-1h.csv splunkprocessor-splunk-1:/opt/splunk/var/spool/splunk/ 
+```
+1) Create/Get a HEC token in Splunk Web:
+Go to Splunk Web on http://localhost:8000
+Settings → Data Inputs → HTTP Event Collector → New Token
+Enable it, copy the token
+Create indexes before you create a token
+
+1) In Splunk Web (http://localhost:8000):
+Settings → Indexes: confirm each CSV index (like ts) exists.
+Settings → Data Inputs → HTTP Event Collector → your token:
+Ensure it’s allowed to write to those indexes (or set “allowed indexes” to include them).
+
+```
+export SPLUNK_HEC_TOKEN=5b44c5d9-9cd3-453f-b86e-5539c67f069a
+python splunk_seed.py --csv ts-core-Jan-9-1h.csv --hec-url https://splunk:8088/services/collector/event --no-verify
+```

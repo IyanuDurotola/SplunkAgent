@@ -5,9 +5,11 @@ from orchestrator.models import InvestigationHypothesis
 import structlog
 import os
 import json
+import re
 
 from shared.bedrock_client import BedrockClient
 from shared.service_catalog import ServiceCatalog
+from shared.logfields_catalog import LogFieldsCatalog
 
 logger = structlog.get_logger()
 
@@ -24,6 +26,7 @@ class PlanningEngine:
         )
         # Initialize service catalog for dependency-aware hypothesis generation
         self.service_catalog = ServiceCatalog()
+        self.logfields_catalog = LogFieldsCatalog()
         logger.info("Initialized Bedrock planning engine")
     
     async def extract_intent(self, question: str) -> Dict[str, Any]:
@@ -42,44 +45,62 @@ class PlanningEngine:
             }
         
         # Build service catalog context for the LLM
-        service_catalog_context = "Available Services in Catalog:\n"
+        service_catalog_context = "Available Services in Catalog and their associated domains, splunk indexes and apps:\n"
         for service_id, info in available_services.items():
             service_catalog_context += f"- {service_id}"
             if info.get("domain"):
                 service_catalog_context += f" (domain: {info['domain']}, tier: {info['tier']})"
             if info.get("splunk_indexes"):
                 service_catalog_context += f" - Splunk indexes: {', '.join(info['splunk_indexes'])}"
+            apps = self.service_catalog.get_apps(service_id)
+            if apps:
+                service_catalog_context += f" - Apps: {', '.join(apps)}"
             service_catalog_context += "\n"
         
-        system_prompt = """You are an expert at analyzing technical questions and extracting key information.
-Extract entities, time references, and symptom keywords from the question.
-IMPORTANT: Only extract service names that exist in the provided service catalog. Do not hallucinate or invent service names."""
+        system_prompt = """You are an expert at analyzing technical questions about Splunk logs and extracting key information for investigation.
+Extract:
+- services (catalog-bound)
+- indexes (catalog-bound)
+- apps (catalog-bound)
+- entities/identifiers (transactionId/traceId/certId/UUIDs/hostnames/etc; NOT catalog-bound)
+- time references
+- symptom keywords
+
+IMPORTANT:
+- Only extract service names that exist in the provided service catalog.
+- Only extract Splunk index names that appear in the provided service catalog.
+- Only extract app names that appear in the provided service catalog.
+- Do not guess/hallucinate service names, index names, or app names."""
+
+        logfields_context = self.logfields_catalog.as_prompt_block()
 
         user_prompt = f"""Analyze the following question and extract:
-1. Key entities (services, systems, components, or Splunk indexes) - ONLY use names from the catalog below
-2. Time references (if any)
-3. Symptom keywords (errors, issues, problems)
-4. Special query patterns:
-   - "origin" or "first occurrence" or "earliest" → means find the first/earliest occurrence
-   - "trace" or "follow" → means follow a transaction/request through the system
-   - "count" or "how many" → means aggregate/count results
+1. Services - ONLY service names from the catalog below
+2. Indexes - ONLY index names from the catalog below
+3. Apps - ONLY app names from the catalog below (these map to a service/index)
+4. Entities/Identifiers - transactionId values, trace IDs, UUIDs, cert IDs, hostnames, error strings (NOT catalog-bound)
+5. Time references (if any)
+6. Symptom keywords (errors, issues, problems)
+7. Special query patterns:
+   - "origin" / "first occurrence" / "earliest" → find the FIRST/EARLIEST occurrence
+   - "trace" / "follow" → follow a transaction/request
+   - "count" / "how many" → aggregate/count results
 
 {service_catalog_context}
+{logfields_context}
 
 Question: {question}
 
 CRITICAL INSTRUCTIONS:
-- Extract service names that EXACTLY match one of the services listed in the catalog above
-- If the question mentions a Splunk index (e.g., "ts", "client", "at"), you may extract it, but it will be validated against the catalog
-- If the question asks about "origin" of an error/transactionId/event, this means finding the FIRST/EARLIEST occurrence
-- Do NOT invent, guess, or hallucinate service names or indexes
-- Do NOT extract partial service names or variations
-- If the question mentions a service/index not in the catalog, do NOT include it in entities
-- Use the exact service_id from the catalog (e.g., "thingspace-core" not "thingspace" or "thingspace core")
-- Prefer extracting service names over indexes when both are mentioned
+- Services MUST EXACTLY match one of the services listed in the catalog above (use the exact service_id).
+- Indexes MUST match one of the catalog indexes above.
+- Do NOT guess/hallucinate service names or indexes.
 
-Provide your response as a JSON object with keys: entities, time_references, symptom_keywords, query_patterns.
-- entities: service names or indexes that match the catalog
+Provide your response as a JSON object with keys: services, indexes, entities, time_references, symptom_keywords, query_patterns.
+- services: service_id values from the catalog
+- indexes: index names from the catalog
+- apps: app names from the catalog
+- entities: identifiers (transactionId/traceId/certId/UUIDs/hostnames/etc)
 - time_references: any time windows mentioned
 - symptom_keywords: errors, issues, problems mentioned
 - query_patterns: special patterns like ["origin", "first_occurrence"] if asking about origin/first occurrence"""
@@ -98,40 +119,75 @@ Provide your response as a JSON object with keys: entities, time_references, sym
             except json.JSONDecodeError:
                 # If not JSON, create basic structure
                 intent_data = {
+                    "services": [],
+                    "indexes": [],
+                    "apps": [],
                     "entities": [],
                     "time_references": [],
                     "symptom_keywords": []
                 }
             
-            # Validate extracted entities against service catalog
-            extracted_entities = intent_data.get("entities", [])
-            validated_entities = []
-            
-            for entity in extracted_entities:
-                # First, try to match as a service name
-                matched_service = self.service_catalog.find_service(entity)
-                if matched_service:
-                    # Use the exact service_id from catalog
-                    validated_entities.append(matched_service.get("service_id"))
-                    logger.debug("Validated entity as service", 
-                               extracted=entity, 
-                               matched_service=matched_service.get("service_id"))
+            extracted_services = intent_data.get("services", []) or []
+            extracted_indexes = intent_data.get("indexes", []) or []
+            extracted_apps = intent_data.get("apps", []) or []
+            extracted_entities = intent_data.get("entities", []) or []
+
+            validated_services: List[str] = []
+            validated_indexes: List[str] = []
+            validated_apps: List[str] = []
+
+            # Validate services
+            for svc in extracted_services:
+                matched_service = self.service_catalog.find_service(str(svc))
+                if matched_service and matched_service.get("service_id"):
+                    validated_services.append(matched_service.get("service_id"))
                 else:
-                    # If not a service, check if it's a valid Splunk index from the catalog
-                    index_matched = False
-                    for service_id, service_data in self.service_catalog.services.items():
-                        indexes = self.service_catalog.get_splunk_indexes(service_id)
-                        if entity.lower() in [idx.lower() for idx in indexes]:
-                            # Index matches - use the service that owns this index
-                            validated_entities.append(service_id)
-                            logger.debug("Validated entity as index, mapped to service",
-                                       extracted_index=entity,
-                                       matched_service=service_id)
-                            index_matched = True
-                            break
-                    
-                    if not index_matched:
-                        logger.warning("Entity not found in service catalog (not a service or valid index), ignoring", entity=entity)
+                    logger.warning("Service not found in service catalog, ignoring", service=svc)
+
+            # Validate indexes, and map them to owning services (to aid dependency-aware hypothesis generation)
+            for idx in extracted_indexes:
+                idx_str = str(idx)
+                owner = self.service_catalog.find_service_by_index(idx_str)
+                if owner:
+                    validated_indexes.append(idx_str)
+                    if owner not in validated_services:
+                        validated_services.append(owner)
+                else:
+                    logger.warning("Index not found in service catalog, ignoring", index=idx_str)
+
+            # Validate apps, and map them to owning services (so app mentions can drive service selection)
+            for app in extracted_apps:
+                app_str = str(app)
+                owner = self.service_catalog.find_service_by_app(app_str)
+                if owner:
+                    validated_apps.append(app_str)
+                    if owner not in validated_services:
+                        validated_services.append(owner)
+                else:
+                    logger.warning("App not found in service catalog, ignoring", app=app_str)
+
+            # Deterministically extract known apps from the question (helps when LLM misses it)
+            question_lower_scan = (question or "").lower()
+            for app in self.service_catalog.get_all_apps():
+                a = (app or "").strip()
+                if not a:
+                    continue
+                # simple substring match; app names are short tokens in our catalog
+                if a.lower() in question_lower_scan and a not in validated_apps:
+                    validated_apps.append(a)
+                    owner = self.service_catalog.find_service_by_app(a)
+                    if owner and owner not in validated_services:
+                        validated_services.append(owner)
+
+            # Deterministically extract UUIDs from the question (helps transactionId origin queries)
+            import re
+            uuid_matches = re.findall(
+                r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+                question
+            )
+            for u in uuid_matches:
+                if u not in extracted_entities:
+                    extracted_entities.append(u)
             
             # Extract query patterns (like "origin", "first occurrence", etc.)
             query_patterns = []
@@ -142,16 +198,24 @@ Provide your response as a JSON object with keys: entities, time_references, sym
             
             intent = {
                 "question": question,
-                "entities": validated_entities,  # Only validated entities from catalog
+                # Catalog-grounded selections:
+                "services": validated_services,
+                "indexes": validated_indexes,
+                "apps": validated_apps,
+                # Non-catalog entities/identifiers (transactionId, UUIDs, etc.)
+                "entities": extracted_entities,
                 "time_references": intent_data.get("time_references", []),
                 "symptom_keywords": intent_data.get("symptom_keywords", []),
                 "query_patterns": intent_data.get("query_patterns", query_patterns)  # Patterns like "origin", "first_occurrence"
             }
             
-            logger.info("Extracted intent", 
-                       entities_count=len(intent["entities"]),
-                       validated_entities=intent["entities"],
-                       original_entities=extracted_entities)
+            logger.info(
+                "Extracted intent",
+                services_count=len(intent["services"]),
+                indexes_count=len(intent["indexes"]),
+                entities_count=len(intent["entities"]),
+                validated_services=intent["services"]
+            )
             return intent
             
         except Exception as e:
@@ -159,6 +223,8 @@ Provide your response as a JSON object with keys: entities, time_references, sym
             # Fallback
             return {
                 "question": question,
+                "services": [],
+                "indexes": [],
                 "entities": [],
                 "time_references": [],
                 "symptom_keywords": []
@@ -172,7 +238,12 @@ Provide your response as a JSON object with keys: entities, time_references, sym
     ) -> List[InvestigationHypothesis]:
         """Generate investigation hypotheses based on the question using Bedrock."""
         system_prompt = """You are an expert at root cause analysis and system troubleshooting.
-Generate investigation hypotheses that will help identify the root cause of issues."""
+Generate investigation hypotheses that will help identify the root cause of issues.
+
+Grounding rules:
+- Service names MUST come from the provided service catalog context.
+- App names MUST come from the provided service catalog context.
+- Do NOT associate an app with a service unless that app is listed under that service in the catalog."""
 
         # Format historical context
         historical_text = ""
@@ -185,17 +256,23 @@ Generate investigation hypotheses that will help identify the root cause of issu
         intent_section = ""
         service_context = ""
         if intent:
+            services = intent.get("services", [])
             entities = intent.get("entities", [])
             symptom_keywords = intent.get("symptom_keywords", [])
-            if entities or symptom_keywords:
+            apps = intent.get("apps", [])
+            if services or entities or symptom_keywords:
                 intent_section = "\n\nExtracted Information:\n"
+                if services:
+                    intent_section += f"Services: {', '.join(services)}\n"
+                if apps:
+                    intent_section += f"Apps: {', '.join(apps)}\n"
                 if entities:
-                    intent_section += f"Key Entities: {', '.join(entities)}\n"
+                    intent_section += f"Identifiers/Entities: {', '.join(entities)}\n"
                 if symptom_keywords:
                     intent_section += f"Symptom Keywords: {', '.join(symptom_keywords)}\n"
                 
-                # Find services matching entities and get dependency information
-                matched_services = self.service_catalog.find_services_by_entities(entities)
+                # Find services matching the explicit services list
+                matched_services = self.service_catalog.find_services_by_entities(services)
                 if matched_services:
                     service_context = "\n\nService Architecture Context:\n"
                     for service in matched_services:
@@ -203,6 +280,9 @@ Generate investigation hypotheses that will help identify the root cause of issu
                         service_info = self.service_catalog.get_service_info(service_id)
                         service_context += f"- Service: {service_id} (Domain: {service_info.get('domain')}, Tier: {service_info.get('tier')}, Criticality: {service_info.get('criticality', 'not specified')})\n"
                         service_context += f"  Splunk Indexes: {', '.join(service_info.get('splunk_indexes', []))}\n"
+                        svc_apps = self.service_catalog.get_apps(service_id)
+                        if svc_apps:
+                            service_context += f"  Apps: {', '.join(svc_apps)}\n"
                         
                         upstream = service_info.get("upstream_dependencies", [])
                         if upstream:
@@ -265,8 +345,10 @@ Respond in JSON format with a list of hypotheses, each with: hypothesis, priorit
                 
                 hypotheses = []
                 for h in hypotheses_data:
+                    hypothesis_text = h.get("hypothesis", "Unknown hypothesis")
+                    hypothesis_text = self._normalize_hypothesis_app_service_mismatch(hypothesis_text)
                     hypotheses.append(InvestigationHypothesis(
-                        hypothesis=h.get("hypothesis", "Unknown hypothesis"),
+                        hypothesis=hypothesis_text,
                         priority=int(h.get("priority", 5)),
                         query_template=h.get("query_template"),
                         next_step=h.get("next_step")
@@ -302,3 +384,44 @@ Respond in JSON format with a list of hypotheses, each with: hypothesis, priorit
         ]
         logger.info("Generated fallback hypotheses", count=len(hypotheses))
         return hypotheses
+
+    def _normalize_hypothesis_app_service_mismatch(self, hypothesis: str) -> str:
+        """
+        Fix a common hallucination: associating a catalog app with the wrong service.
+        Example: "ottdata ... in the thingspace-core service" → owner is "provider".
+        We only rewrite when the hypothesis explicitly says "in the <service> service".
+        """
+        text = (hypothesis or "").strip()
+        if not text:
+            return text
+
+        # Find explicit "in the X service" mentions
+        m = re.search(r"\bin\s+the\s+([A-Za-z0-9_.:-]+)\s+service\b", text, flags=re.IGNORECASE)
+        if not m:
+            return text
+        mentioned_service = m.group(1)
+
+        # If an app is mentioned, ensure it maps to the same service
+        for app in self.service_catalog.get_all_apps():
+            if not app:
+                continue
+            if app.lower() in text.lower():
+                owner = self.service_catalog.find_service_by_app(app)
+                if owner and owner.lower() != mentioned_service.lower():
+                    logger.warning(
+                        "Normalized hypothesis app/service mismatch",
+                        app=app,
+                        mentioned_service=mentioned_service,
+                        owner_service=owner,
+                        original=hypothesis,
+                    )
+                    # Replace only the service mention, keep the rest intact
+                    return re.sub(
+                        r"\bin\s+the\s+([A-Za-z0-9_.:-]+)\s+service\b",
+                        f"in the {owner} service",
+                        text,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+
+        return text

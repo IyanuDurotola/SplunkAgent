@@ -34,6 +34,20 @@
             "service": "provider",
             "failure_modes": ["timeout", "5xx"]
           }
+        ],
+        "apps":[
+          {
+            "app": "authv2",
+            "failure_modes": ["timeout", "connection error"]
+          },
+          {
+            "app": "data",
+            "failure_modes": ["timeout", "connection error"]
+          },
+          {
+            "app": "v1adapter",
+            "failure_modes": ["timeout", "connection error"]
+          }
         ]
       }
     },
@@ -50,16 +64,26 @@
       "dependencies": {
         "upstream": [
           {
-            "service": "database",
-            "failure_modes": ["timeout", "connection error","device not found"]
-          },
-          {
             "service": "cache",
             "failure_modes": ["timeout", "connection error"]
           },
           {
             "service": "queue",
             "failure_modes": ["timeout", "connection error"]
+          }
+        ],
+        "apps":[
+          {
+            "app": "ottdata",
+            "failure_modes": ["timeout", "connection error","device not found"]
+          },
+          {
+            "app": "gprovider",
+            "failure_modes": ["timeout", "connection error","device not found"]
+          },
+          {
+            "app": "certmanager",
+            "failure_modes": ["timeout", "connection error","device not found"]
           }
         ]
       }

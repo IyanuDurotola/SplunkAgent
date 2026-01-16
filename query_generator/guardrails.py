@@ -42,6 +42,15 @@ class QueryGuardrails:
         # Ensure time window is within limits
         from datetime import datetime, timedelta
         start, end = time_window
+        
+        # Normalize time window ordering (Splunk requires latest_time > earliest_time)
+        if start > end:
+            logger.warning("Start time is after end time; swapping for Splunk", start_time=start, end_time=end)
+            start, end = end, start
+        elif start == end:
+            # Splunk rejects latest_time == earliest_time
+            end = start + timedelta(seconds=1)
+            logger.warning("Start time equals end time; expanding by 1s for Splunk", start_time=start, end_time=end)
         days_diff = (end - start).days
         
         if days_diff > self.MAX_TIME_RANGE_DAYS:

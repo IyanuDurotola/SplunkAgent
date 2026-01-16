@@ -131,38 +131,71 @@ class SplunkClient:
         def _search_sync():
             try:
                 job = self.service.jobs.oneshot(query, output_mode=output_mode, count=count, **kwargs)
-                results = []
-                for result in job:
-                    # Handle both dict and bytes responses
-                    if isinstance(result, bytes):
-                        # If result is bytes, try to parse as JSON
+
+                # Important: oneshot returns a response stream. Iterating it yields raw chunks,
+                # not "event dicts" like the UI. Read the full payload and parse JSON properly.
+                raw_bytes = b""
+                try:
+                    # ResponseReader supports .read()
+                    raw_bytes = job.read()  # type: ignore[attr-defined]
+                except Exception:
+                    # Fallback: join chunks
+                    raw_bytes = b"".join(chunk if isinstance(chunk, (bytes, bytearray)) else str(chunk).encode("utf-8") for chunk in job)
+
+                text = raw_bytes.decode("utf-8", errors="ignore").strip()
+                if not text:
+                    return {"results": [], "total_count": 0, "fields": [], "messages": []}
+
+                results: list = []
+                messages: list = []
+
+                # Splunk oneshot JSON can be:
+                # - a single JSON object (possibly pretty-printed with newlines)
+                # - newline-delimited JSON objects (NDJSON)
+                parsed_any = False
+
+                # First try: parse the entire payload as JSON.
+                try:
+                    obj = json.loads(text)
+                    parsed_any = True
+                    if isinstance(obj, dict):
+                        if isinstance(obj.get("results"), list):
+                            results.extend(obj.get("results", []))
+                        if isinstance(obj.get("messages"), list):
+                            messages.extend(obj.get("messages", []))
+                    elif isinstance(obj, list):
+                        results.extend(obj)
+                except json.JSONDecodeError:
+                    # Second try: NDJSON line-by-line.
+                    lines = [ln for ln in text.splitlines() if ln.strip()]
+                    for ln in lines:
                         try:
-                            result = json.loads(result.decode('utf-8'))
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            # If not JSON, treat as raw string
-                            result = {"_raw": result.decode('utf-8', errors='ignore')}
-                    elif isinstance(result, str):
-                        # If result is string, try to parse as JSON
-                        try:
-                            result = json.loads(result)
+                            obj = json.loads(ln)
+                            parsed_any = True
                         except json.JSONDecodeError:
-                            result = {"_raw": result}
-                    # result should now be a dict
-                    if isinstance(result, dict):
-                        results.append(result)
-                    else:
-                        # Fallback: wrap in dict
-                        results.append({"_raw": str(result)})
-                
-                # Extract fields from first result if available
+                            continue
+
+                        if isinstance(obj, dict):
+                            if isinstance(obj.get("results"), list):
+                                results.extend(obj.get("results", []))
+                            if isinstance(obj.get("messages"), list):
+                                messages.extend(obj.get("messages", []))
+                        elif isinstance(obj, list):
+                            results.extend(obj)
+
+                if not parsed_any:
+                    # Fallback: return raw text as a single event (so we can still debug what Splunk returned)
+                    results = [{"_raw": text}]
+
                 fields = []
                 if results and isinstance(results[0], dict):
                     fields = list(results[0].keys())
-                
+
                 return {
                     "results": results,
                     "total_count": len(results),
-                    "fields": fields
+                    "fields": fields,
+                    "messages": messages,
                 }
             except Exception as e:
                 # Reset connection on error
